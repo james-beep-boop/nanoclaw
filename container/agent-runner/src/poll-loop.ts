@@ -17,6 +17,7 @@ import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types
 
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
+const HEARTBEAT_INTERVAL_MS = 5000; // Touch heartbeat every 5s, independent of poll loop
 
 function log(msg: string): void {
   console.error(`[poll-loop] ${msg}`);
@@ -65,6 +66,12 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   // Clear leftover 'processing' acks from a previous crashed container.
   // This lets the new container re-process those messages.
   clearStaleProcessingAcks();
+
+  // Start independent heartbeat interval so host knows we're alive,
+  // even if the poll loop is slow (e.g., due to Telegram polling failures).
+  const heartbeatInterval = setInterval(() => {
+    touchHeartbeat();
+  }, HEARTBEAT_INTERVAL_MS);
 
   let pollCount = 0;
   let isFirstPoll = true;
