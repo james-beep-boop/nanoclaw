@@ -336,6 +336,71 @@ sqlite3 data/v2.db "SELECT COUNT(*) FROM agent_groups;" 2>&1
 
 ---
 
+## Upstream Merge & Testing (2026-05-24 10:15 PDT)
+
+**Status: ✅ FULLY INTEGRATED & VERIFIED**
+
+### Upstream Merge Summary
+
+Merged 43 commits from upstream/main into local main, bringing version from 2.0.64 → 2.0.69.
+
+**Critical Fix Included:**
+- **CLAUDE.local.md Loading** — upstream fix (commit c727bb6) now ensures per-group memory loads
+  - Changed: `settingSources: ['project', 'user']` → `['project', 'user', 'local']`
+  - Impact: Agent now reads per-group CLAUDE.local.md (Who David Is, projects, preferences, infrastructure)
+  - Status: ✅ ACTIVE (verified in container-runner/src/providers/claude.ts)
+
+**Other Improvements:**
+- Transcript rotation fixes (oversized transcript handling)
+- Signal auth improvements (number field reading from signal-cli 0.13+)
+- WhatsApp formatting skill added
+- Channel approval scoping fixes
+- Token count documentation updates
+
+### Merge Compatibility Analysis
+
+Your 20 local commits:
+- ✅ All preserved (merge preserves history)
+- ✅ None redundant (Telegram, Dashboard, Mnemon are unique)
+- ✅ No conflicts (auto-merged cleanly)
+- ✅ Forward-compatible (upstream fixes benefit your setup)
+
+### Post-Merge Testing Results (2026-05-24 10:12 PDT)
+
+**All 8 Diagnostic Tests: PASS**
+
+1. ✅ Service Status — ACTIVE (2+ min uptime, 51.8M memory, clean restart)
+2. ✅ Systemd Logs — CLEAN (no errors/warnings since restart)
+3. ✅ Environment Variables — LOADED (TELEGRAM_BOT_TOKEN, ONECLI_URL present)
+4. ✅ Process Management — HEALTHY (1 process, PID 28252)
+5. ✅ Port Binding — LISTENING (3000 webhook, 3100 dashboard)
+6. ✅ Error Log — CLEAN (0 errors since restart)
+7. ✅ Docker Containers — HEALTHY (onecli + postgres-1, both up 46min)
+8. ✅ Database Integrity — INTACT (1 group, 2 users, 2 messaging groups)
+
+**Extended Verification: PASS**
+
+- ✅ Telegram Polling — Active TCP connection to 149.154.166.110:443
+- ✅ Message Delivery — Last Telegram message delivered 09:51:41 UTC
+- ✅ CLAUDE.local.md Ready — File present, mount path confirmed, SDK config verified
+- ✅ Network Connectivity — Tailscale active (100.88.123.29), Telegram API reachable
+- ✅ Dashboard Monitoring — Port 3100 listening, pusher collecting every 60s
+- ✅ Mnemon — Persistent memory service ready
+
+**Container Rebuild: PASS**
+
+- Host rebuilt: ✅ (pnpm run build completed)
+- Container rebuilt: ✅ (nanoclaw-agent-v2-8ab601c8:latest)
+- Service restarted: ✅ (clean startup at 10:12:43 PDT)
+
+**Overall Assessment:**
+- Service Health: ✅ EXCELLENT
+- Error Rate: ✅ ZERO
+- Ready for Reboot: ✅ YES
+- Confidence Level: ✅ 100%
+
+---
+
 ## Extended Stability Test Results (2026-05-24 09:22 PDT)
 
 **Status: ✅ FULLY OPERATIONAL & STABLE**
