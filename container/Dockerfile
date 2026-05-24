@@ -111,7 +111,7 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
     pnpm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # ---- mnemon — persistent agent memory ----------------------------------------
-ARG MNEMON_VERSION=0.1.4
+ARG MNEMON_VERSION=0.1.8
 RUN ARCH=$(dpkg --print-architecture) && \
     curl -fsSL "https://github.com/mnemon-dev/mnemon/releases/download/v${MNEMON_VERSION}/mnemon_${MNEMON_VERSION}_linux_${ARCH}.tar.gz" \
     | tar -xz -C /usr/local/bin mnemon && \

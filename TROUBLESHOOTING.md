@@ -465,6 +465,64 @@ The system is **stable and ready for operations**. All core services are operati
 
 ---
 
+### Issue 6: Mnemon Verification & Upgrade (2026-05-24)
+
+**Background:** Mnemon is installed in the agent container as persistent graph-based memory. It stores and recalls facts about users, projects, and context across sessions.
+
+**Version Status:**
+- Previous: 0.1.4
+- Current: ✅ 0.1.8 (upgraded 2026-05-24 11:06)
+
+**Why the Upgrade:**
+- 0.1.8 includes stable entity-graph behavior (critical for recall ranking)
+- Adds `--embed-model` runtime configuration flag
+- Released 2026-05-24, includes improvements to storage reliability
+
+**Verification Challenge & Resolution:**
+
+**What Appeared to Be a Problem:** When verifying mnemon was working, initial attempts to check the session databases failed with schema errors. This suggested mnemon might not be functioning. However, **mnemon was working the entire time**.
+
+**Why the Confusion Occurred:**
+1. Attempted to verify through indirect methods (querying `messages_out` table for "mnemon" mentions)
+2. Session database queries failed due to incorrect schema assumptions
+3. The schema errors made it *look* like mnemon wasn't being used
+4. But the agent container had mnemon installed, running, and actively storing/recalling facts
+
+**Root Cause:**
+- Used wrong column names in SQL queries (`platform_msg_id` instead of `platform_id`)
+- Session DBs have a specific schema; trying to query without knowing the exact columns fails
+- The failure of the indirect verification method doesn't mean the tool isn't working
+
+**Correct Verification Method:**
+Always test tools with their native CLI when in doubt:
+```bash
+# Direct test — use the tool's own interface
+docker exec <container_name> mnemon --version
+docker exec <container_name> mnemon recall '<search_term>'
+docker exec <container_name> mnemon remember '<fact>'
+
+# Verify database file and timestamp
+docker exec <container_name> ls -lh /home/node/.claude/mnemon/data/default/mnemon.db
+```
+
+**Test Results (2026-05-24 11:05 UTC):**
+- ✅ `mnemon --version` → 0.1.4 (pre-upgrade)
+- ✅ `mnemon recall 'SHEQL'` → 10 ranked results with proper scoring
+- ✅ `mnemon remember` → Successfully stored test fact with graph relationships
+- ✅ Graph traversal working (automatically linked 6 related facts)
+- ✅ Database persistent (212KB, updated in real-time)
+
+**Post-Upgrade (2026-05-24 11:06 UTC):**
+- ✅ Container rebuilt with mnemon 0.1.8
+- ✅ Binary verified in new image: `docker run --entrypoint /usr/local/bin/mnemon nanoclaw-agent-v2-8ab601c8:latest --version` → 0.1.8
+- ✅ First session with new version tested and working ✅
+
+**Lesson:** When diagnosing tools with CLI interfaces, use the CLI directly rather than trying to infer status from logs or indirect database queries. The tool's own output is the authoritative source of truth.
+
+**Status:** ✅ UPGRADED, VERIFIED, OPERATIONAL
+
+---
+
 ## Lessons Learned
 
 **Key lesson:** The setup script already handles all service management correctly via `setup/service.ts`. Manual modifications create conflicts instead of solving problems.
@@ -476,3 +534,44 @@ Failed approaches that made things worse:
 - Attempting to override auto-generated configuration
 
 **Best practice:** Always verify what's already installed before adding new configuration. The OS service management system is the single source of truth — use it, don't work around it.
+
+**Additional principle:** When a tool has a direct CLI interface, test it directly rather than inferring its status from indirect sources (logs, database queries). Direct verification (the tool's own output) is the authoritative source.
+
+---
+
+## Git Configuration & Pushing
+
+**NanoClaw repository location:** `/home/david/nanoclaw-v2/`
+
+**Important:** This is a separate directory from your other GitHub code. Do not assume NanoClaw is in the same parent directory as your other projects.
+
+**Pushing to GitHub:**
+
+You have a personal access token configured for git authentication. When pushing:
+
+```bash
+# Standard push (uses configured PAT)
+git push origin main
+
+# Verify remote is set correctly
+git remote -v
+# Should show: origin https://github.com/james-beep-boop/nanoclaw.git
+```
+
+**If authentication fails:**
+- Verify the PAT is still valid (check GitHub Settings → Developer settings → Personal access tokens)
+- Ensure it has `repo` scope (read/write to repositories)
+- GitHub deprecated password authentication; the PAT is the correct method
+- If token expired, generate a new one and update git config:
+  ```bash
+  git remote set-url origin https://<token>@github.com/james-beep-boop/nanoclaw.git
+  ```
+
+**Before pushing:**
+Always verify your branch is up to date with upstream:
+```bash
+git log upstream/main..HEAD --oneline  # commits to push
+git diff upstream/main --stat          # files changed
+```
+
+Show this output and wait for approval before pushing.
