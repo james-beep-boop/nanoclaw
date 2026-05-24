@@ -181,6 +181,58 @@ journalctl --user -u nanoclaw-v2-* -f | grep -i container  # Monitor spawning
 
 ---
 
+### Issue 5: Telegram Polling Verification (2026-05-24 Investigation)
+
+**Investigation Summary:** During diagnostic testing, error log entries showed "Telegram polling request failed" and "fetch failed" errors. Initial assessment mistakenly interpreted these as ongoing polling failures with a non-functional fallback webhook mechanism.
+
+**Actual Status:** ✅ POLLING IS FULLY OPERATIONAL
+
+**Findings:**
+
+1. **Polling actively working:**
+   - 2 ESTABLISHED TCP connections to Telegram API (149.154.166.110:443) confirmed via `ss -tunap`
+   - Connections persistent with 30-second polling timeout cycles
+   - Both connections active and receiving updates in real-time
+
+2. **Error log interpretation:**
+   - Errors timestamped at 09:39:54 occurred during service restart
+   - Error source: Telegram `getMe` initialization call (fetching bot identity)
+   - "Telegram webhook reset" is initialization routine, not ongoing failure
+   - No new polling errors after startup completed
+
+3. **Webhook status:**
+   - Webhooks are NOT enabled with Telegram
+   - Confirmed via `curl https://api.telegram.org/bot[TOKEN]/getWebhookInfo`
+   - Response: `{"url":"",...}` (empty webhook URL)
+   - NanoClaw has local webhook server (port 3000) but Telegram doesn't know about it
+   - System relies 100% on polling (not as fallback, but as primary mechanism)
+
+4. **Message delivery:**
+   - Messages successfully routed and delivered
+   - Verified at 09:51:33 and 09:51:41 UTC during testing
+   - No impact to end users
+
+**Root Cause of Confusion:**
+- Chat SDK logs without timestamps in error log made it unclear when errors occurred
+- Initialization errors were not distinguished from operational failures
+- Webhook availability was assumed rather than verified
+
+**Lesson:** When diagnosing Telegram issues, always verify:
+```bash
+# Check active polling connections
+ss -tunap | grep "149.154.166"
+
+# Verify webhook status with Telegram
+curl "https://api.telegram.org/bot[YOUR_TOKEN]/getWebhookInfo"
+
+# Confirm in logs (recent, timestamped entries)
+tail -30 logs/nanoclaw.log | grep -i telegram
+```
+
+**Status:** ✅ VERIFIED - Polling working perfectly (2026-05-24 09:52 UTC)
+
+---
+
 ## Post-Reboot Diagnostic Checklist
 
 **If problems occur after reboot, run these checks in order (total time: ~2 minutes).** Each step is independent and quickly narrows down the issue.
