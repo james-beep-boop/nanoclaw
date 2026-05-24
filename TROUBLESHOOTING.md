@@ -100,40 +100,25 @@ systemctl --user show-environment | grep TELEGRAM_BOT_TOKEN
 
 **Problem:** Without environment variables loaded, `TELEGRAM_BOT_TOKEN` was empty, causing polling to fail. Failures cascaded, blocking other channels and triggering container timeouts.
 
-**Fix (temporary):** Disabled Telegram adapter in `src/channels/index.ts:11` (commented out import) to stabilize the system.
+**Temporary fix:** Disabled Telegram adapter in `src/channels/index.ts:11` (commented out import) to stabilize the system.
 
-**Status:** ✅ Applied — Telegram currently disabled
+**Status:** ✅ RESOLVED — Telegram is now re-enabled and operational (2026-05-24 09:31 UTC)
 
-**To re-enable Telegram** (now that environment file is fixed):
+**What was done:**
+1. Fixed `EnvironmentFile=` directive in systemd service → environment variables now load correctly
+2. Uncommented the Telegram import in `src/channels/index.ts`
+3. Rebuilt and restarted the service
+4. Verified Telegram polling is active and connecting to `api.telegram.org`
 
-1. Uncomment the import in `src/channels/index.ts`:
-   ```typescript
-   import './cli.js';
-   import './telegram.js';  // ← uncomment this
-   ```
+**Verification:**
+- Telegram adapter initialized with bot ID and username ✅
+- Polling actively running (30s timeout, limit 100) ✅
+- Messages routing through successfully ✅
 
-2. Rebuild and restart:
-   ```bash
-   pnpm run build
-   systemctl --user restart nanoclaw-v2-*
-   journalctl --user -u nanoclaw-v2-* -f  # Monitor startup for 30 seconds
-   ```
-
-3. Verify environment is loaded:
-   ```bash
-   systemctl --user show-environment | grep TELEGRAM_BOT_TOKEN
-   ```
-
-4. Monitor logs for polling success:
-   ```bash
-   journalctl --user -u nanoclaw-v2-* -f | grep -i telegram
-   # Should NOT see "Telegram polling request failed"
-   ```
-
-If polling still fails:
-- Token may have expired (get a new one from BotFather)
-- Network connectivity to `api.telegram.org` may be broken
-- Tailscale routing might be blocking the API endpoint
+If Telegram stops working in the future:
+- Check `TELEGRAM_BOT_TOKEN` is loaded: `systemctl --user show-environment | grep TELEGRAM_BOT_TOKEN`
+- Monitor polling: `journalctl --user -u nanoclaw-v2-* -f | grep -i telegram`
+- Common causes: token expired (refresh from BotFather), network blocked, Tailscale routing issue
 
 ---
 
