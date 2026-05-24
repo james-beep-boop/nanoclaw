@@ -263,6 +263,11 @@ tail -30 logs/nanoclaw.log | grep -i telegram
 
 **Status:** ✅ FIXED (2026-05-24 11:37 UTC)
 
+**Agent Note:** This fix has been applied to the container code. If Telegram shows a continuous typing indicator in future sessions, the most likely causes are:
+- The fix was reverted (check `container/agent-runner/src/poll-loop.ts` for the heartbeat interval)
+- The container wasn't rebuilt after the fix (run `./container/build.sh`)
+- A different heartbeat-related issue was introduced (check the poll loop for any new unconditional heartbeat touches)
+
 ---
 
 ## Post-Reboot Diagnostic Checklist
