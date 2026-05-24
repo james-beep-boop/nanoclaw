@@ -26,11 +26,13 @@
 - **User:** david (non-root)
 
 ### Critical: Environment Variables Not Loading
-**As of 2026-05-24:** The auto-generated systemd service file does NOT include an `EnvironmentFile=` directive. This means variables from `.env` are not loaded into the process environment.
+**Status: FIXED (2026-05-24 09:01 UTC)**
 
-**Impact:** Telegram token and other sensitive credentials in `.env` are never passed to nanoclaw, causing `TELEGRAM_BOT_TOKEN` to be undefined → polling fails with 404.
+The auto-generated systemd service file was missing an `EnvironmentFile=` directive, which meant variables from `.env` were not loaded into the process environment.
 
-**Fix required:** Add `EnvironmentFile=%h/.env` to the `[Service]` section of the systemd service file (see below).
+**Fix applied:** Added `EnvironmentFile=/home/david/nanoclaw-v2/.env` to the systemd service file.
+
+**Verification:** ✅ Process now has TELEGRAM_BOT_TOKEN loaded in its environment.
 
 ---
 
@@ -186,9 +188,9 @@ systemctl --user show-environment | grep TELEGRAM
 
 ---
 
-## Re-enabling Telegram (After Environment Fix)
+## Re-enabling Telegram (Environment Fix Applied ✅)
 
-Once the systemd `EnvironmentFile=` fix is applied, Telegram will have access to the token. Un-comment the adapter:
+The systemd environment fix has been applied (2026-05-24 09:01 UTC). Telegram token is now loaded. To enable Telegram:
 
 ### Step 1: Un-comment the Telegram Adapter
 Edit `src/channels/index.ts` and uncomment line 11:
