@@ -286,6 +286,108 @@ Once this is stable:
 
 ---
 
+## Post-Reboot Diagnostic Checklist
+
+**If problems occur after reboot, run these checks in order (total time: ~2 minutes).** Each step is independent and quickly narrows down the issue.
+
+### Step 1: Service Status (10 seconds)
+```bash
+systemctl --user status nanoclaw-v2-*
+```
+**Check for:** Active/running status. If failed/inactive, skip to Step 2 logs for error.
+
+---
+
+### Step 2: Recent Systemd Logs (30 seconds)
+```bash
+journalctl --user -u nanoclaw-v2-* -n 50 --no-pager
+```
+**Check for:**
+- Startup errors
+- "Failed to load environment files" → EnvironmentFile directive broken
+- "listen EADDRINUSE" → port conflict
+- "signal" exits → process being killed
+
+---
+
+### Step 3: Environment Variables Loaded (5 seconds)
+```bash
+PID=$(pgrep -f "node.*dist/index.js"); cat /proc/$PID/environ | tr '\0' '\n' | grep TELEGRAM
+```
+**Check for:** 
+- TELEGRAM_BOT_TOKEN present and non-empty
+- If empty or missing → EnvironmentFile not loaded (see critical section at top)
+
+---
+
+### Step 4: Process Status (5 seconds)
+```bash
+ps aux | grep "node.*dist/index.js" | grep -v grep
+```
+**Check for:**
+- Exactly ONE process running
+- If multiple → port conflict / duplicate service issue
+- If zero → service failed to start (check Step 2 logs)
+
+---
+
+### Step 5: Port Binding (5 seconds)
+```bash
+lsof -i -P -n 2>/dev/null | grep 3100 | grep node
+```
+**Check for:**
+- Dashboard port (3100) bound to nanoclaw PID
+- If port taken by something else → find what and kill/stop it
+- If not listening → check Step 2 logs for binding errors
+
+---
+
+### Step 6: Application Error Log (10 seconds)
+```bash
+tail -50 logs/nanoclaw.log | grep -E "ERROR|FAIL|Exception"
+```
+**Check for:**
+- Channel initialization failures
+- Database errors
+- Startup panic messages
+
+---
+
+### Step 7: Docker Containers (5 seconds)
+```bash
+docker ps --format "table {{.Names}}\t{{.Status}}"
+```
+**Check for:**
+- OneCLI container: Up and healthy
+- PostgreSQL container: Up and healthy
+- If unhealthy/exited → restart with `docker compose up -d` from OneCLI directory
+
+---
+
+### Step 8: Database Integrity (10 seconds)
+```bash
+sqlite3 data/v2.db "SELECT COUNT(*) FROM agent_groups;" 2>&1
+```
+**Check for:**
+- Returns a number (not error)
+- If "database is locked" → process tried to start before cleanup finished, wait 10s and retry
+- If corruption → database may need recovery (rare)
+
+---
+
+### Likely Failure Scenarios
+
+| Symptom | First Check | Most Common Cause |
+|---------|-------------|-------------------|
+| Service won't start | Step 2 logs | EnvironmentFile path wrong, or .env deleted |
+| Credentials not working | Step 3 env vars | TELEGRAM_BOT_TOKEN empty → EnvironmentFile not loaded |
+| Port already in use | Step 5 port binding | Ghost process from before reboot, or duplicate service |
+| Process crashes immediately | Step 6 app logs | Database corruption, or missing dependency |
+| Containers unhealthy | Step 7 containers | OneCLI/Postgres restart needed, or disk full |
+| Service stuck "starting" | Step 2 logs + Step 6 logs | Blocking I/O, waiting on network, or deadlock |
+
+---
+
 ## Historical Context: Learning from Failed Approaches (Archive)
 
 The resolution path above involved multiple troubleshooting attempts that failed. Documented here for reference:
