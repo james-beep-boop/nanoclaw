@@ -104,12 +104,6 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   // This lets the new container re-process those messages.
   clearStaleProcessingAcks();
 
-  // Start independent heartbeat interval so host knows we're alive,
-  // even if the poll loop is slow (e.g., due to Telegram polling failures).
-  const heartbeatInterval = setInterval(() => {
-    touchHeartbeat();
-  }, HEARTBEAT_INTERVAL_MS);
-
   let pollCount = 0;
   let isFirstPoll = true;
   while (true) {
