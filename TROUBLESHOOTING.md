@@ -152,6 +152,50 @@ export const ABSOLUTE_CEILING_MS = 60 * 60 * 1000;  // 60 minutes
 
 ---
 
+### Issue 4: Container Image Not Built
+
+**Problem:** Agent containers exit immediately with code 125 (Docker daemon error), preventing agent sessions from running. The `nanoclaw-agent-v2-[UUID]:latest` container image doesn't exist on the Docker daemon.
+
+**Symptom:** Messages arrive at sessions, but containers fail:
+```
+[INFO] Container exited sessionId="sess-..." code=125 containerName="nanoclaw-v2-..."
+```
+Check with:
+```bash
+docker images | grep nanoclaw-agent
+# Should return the image; if empty, it wasn't built
+```
+
+**Cause:** The container image is not built by default. It must be manually built after install or after any changes to `container/` directory (deps, Dockerfile, entrypoint, etc.).
+
+**Fix:** Rebuild the container image:
+```bash
+./container/build.sh
+```
+
+This builds `nanoclaw-agent-v2-[UUID]:latest` where UUID is derived from the project root path (deterministic and stable). The build process:
+1. Installs Bun runtime and dependencies (`container/agent-runner/`)
+2. Compiles agent-runner TypeScript
+3. Layers CLI tools (agent-browser, claude-code, mnemon, etc.)
+4. Tags image with install-specific UUID so multiple NanoClaw installs don't clobber each other
+
+**Restart after rebuild:**
+```bash
+systemctl --user restart nanoclaw-v2-*
+journalctl --user -u nanoclaw-v2-* -f | grep -i container  # Monitor spawning
+```
+
+**When to rebuild:**
+- After first install (required before any agent can run)
+- After upgrading NanoClaw (`bash migrate-v2.sh` or `git pull`)
+- After editing `container/Dockerfile` or `container/entrypoint.sh`
+- After changing agent-runner dependencies (`container/agent-runner/package.json`)
+- After adding new global CLI tools to the Dockerfile
+
+**Status:** ✅ Applied (2026-05-24 09:39 UTC)
+
+---
+
 ## Post-Reboot Diagnostic Checklist
 
 **If problems occur after reboot, run these checks in order (total time: ~2 minutes).** Each step is independent and quickly narrows down the issue.
@@ -249,6 +293,7 @@ sqlite3 data/v2.db "SELECT COUNT(*) FROM agent_groups;" 2>&1
 | Credentials not working | Step 3 env vars | TELEGRAM_BOT_TOKEN empty → EnvironmentFile not loaded |
 | Port already in use | Step 5 port binding | Ghost process from before reboot, or duplicate service |
 | Process crashes immediately | Step 6 app logs | Database corruption, or missing dependency |
+| Containers exit code 125 | App logs | Container image not built → run `./container/build.sh` |
 | Containers unhealthy | Step 7 containers | OneCLI/Postgres restart needed, or disk full |
 | Service stuck "starting" | Step 2 logs + Step 6 logs | Blocking I/O, waiting on network, or deadlock |
 
