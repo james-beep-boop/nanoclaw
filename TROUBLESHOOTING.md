@@ -119,6 +119,50 @@ export const ABSOLUTE_CEILING_MS = 60 * 60 * 1000;  // 60 minutes (was 30)
 
 ---
 
+## Re-enabling Telegram (When Ready)
+
+Telegram is currently disabled to prevent polling failures from blocking message processing. When you want to re-enable it:
+
+### Step 1: Verify Bot Token Validity
+```bash
+curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | jq .ok
+# Should return: true
+# If false or error, token is invalid or expired — get a new one before proceeding
+```
+
+### Step 2: Test Network Connectivity to Telegram API
+```bash
+ping api.telegram.org
+curl -s -I https://api.telegram.org/
+# Should succeed without timeout. If DNS fails or hangs, network routing is broken.
+```
+
+### Step 3: Un-comment the Telegram Adapter
+Edit `src/channels/index.ts` and uncomment line 11:
+```typescript
+import './cli.js';
+import './telegram.js';  // ← uncomment this
+```
+
+### Step 4: Rebuild and Restart
+```bash
+pnpm run build
+systemctl --user restart nanoclaw-v2-*
+journalctl --user -u nanoclaw-v2-* -f  # Monitor startup
+```
+
+### Step 5: Monitor for Polling Success
+Watch the logs for 5-10 minutes to ensure Telegram polling is working:
+```bash
+journalctl --user -u nanoclaw-v2-* -f | grep -i telegram
+# Should NOT see: "Telegram polling request failed"
+# If errors appear, token may have expired or connectivity is broken
+```
+
+If polling errors return, disable Telegram again and troubleshoot the token/connectivity before trying once more.
+
+---
+
 ## Issue: Persistent Heartbeat Timeouts & Container Kills (RESOLVED 2026-05-24)
 
 **Resolved:** May 21-24, 2026
