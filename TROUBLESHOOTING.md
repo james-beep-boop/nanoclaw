@@ -233,6 +233,38 @@ tail -30 logs/nanoclaw.log | grep -i telegram
 
 ---
 
+### Issue 6: Telegram Shows Agent as "Typing" Continuously
+
+**Problem:** In Telegram chats, the agent appears to be typing (typing indicator active) even when it has finished responding and is idle.
+
+**Root Cause:** An independent heartbeat interval in the agent poll loop was touching the heartbeat file every 5 seconds unconditionally. The typing indicator module relies on heartbeat staleness to determine when to stop showing the typing indicator. Since the heartbeat was always fresh, the typing indicator never cleared.
+
+**Fix:** Remove the unconditional heartbeat interval and rely only on event-based heartbeat updates. The heartbeat is already touched when Claude sends events, which is sufficient.
+
+**Changes:**
+- File: `container/agent-runner/src/poll-loop.ts`
+- Removed lines 107-111 (the `setInterval` that touched heartbeat every 5 seconds)
+- Heartbeat is still touched in the event loop (line 431: `touchHeartbeat()` on each Claude event)
+
+**Apply the fix:**
+1. Rebuild the container:
+   ```bash
+   ./container/build.sh
+   ```
+
+2. Restart the service:
+   ```bash
+   systemctl --user restart nanoclaw-v2-*  # Linux
+   # or
+   launchctl kickstart -k gui/$(id -u)/com.nanoclaw  # macOS
+   ```
+
+3. Test: Start a new conversation in Telegram. The typing indicator should clear after the agent finishes responding.
+
+**Status:** ✅ FIXED (2026-05-24 11:37 UTC)
+
+---
+
 ## Post-Reboot Diagnostic Checklist
 
 **If problems occur after reboot, run these checks in order (total time: ~2 minutes).** Each step is independent and quickly narrows down the issue.
