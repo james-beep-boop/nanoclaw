@@ -28,6 +28,7 @@ import {
   getMessagingGroupAgentByPair,
   getMessagingGroupByPlatform,
 } from '../src/db/messaging-groups.js';
+import { updateContainerConfigScalars } from '../src/db/container-configs.js';
 import { runMigrations } from '../src/db/migrations/index.js';
 import { normalizeName } from '../src/modules/agent-to-agent/db/agent-destinations.js';
 import { upsertUser } from '../src/modules/permissions/db/users.js';
@@ -123,6 +124,8 @@ async function main(): Promise<void> {
       `You are ${args.agentName}, a personal NanoClaw agent for ${args.displayName}. ` +
       'When the user first reaches out, introduce yourself briefly and invite them to chat. Keep replies concise.',
   });
+  // Set default model to Haiku 4.5
+  updateContainerConfigScalars(ag.id, { model: 'claude-haiku-4-5-20251001' });
 
   // 3. CLI messaging group + wiring.
   let cliMg: MessagingGroup | undefined = getMessagingGroupByPlatform(CLI_CHANNEL, CLI_PLATFORM_ID);

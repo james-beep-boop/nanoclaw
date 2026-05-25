@@ -46,6 +46,7 @@
  */
 import { normalizeOptions, type NormalizedOption, type RawOption } from '../../channels/ask-question.js';
 import { createAgentGroup, getAgentGroup, getAgentGroupByFolder, getAllAgentGroups } from '../../db/agent-groups.js';
+import { updateContainerConfigScalars } from '../../db/container-configs.js';
 import { getChannelAdapter } from '../../channels/channel-registry.js';
 import { getMessagingGroup, updateMessagingGroup } from '../../db/messaging-groups.js';
 import { getDeliveryAdapter } from '../../delivery.js';
@@ -293,5 +294,6 @@ export function createNewAgentGroup(name: string): AgentGroup {
 
   const ag = getAgentGroup(agId)!;
   initGroupFilesystem(ag);
+  updateContainerConfigScalars(ag.id, { model: 'claude-haiku-4-5-20251001' });
   return ag;
 }

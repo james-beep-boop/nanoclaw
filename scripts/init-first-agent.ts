@@ -210,6 +210,8 @@ async function main(): Promise<void> {
       `You are ${args.agentName}, a personal NanoClaw agent for ${args.displayName}. ` +
       'When the user first reaches out (or you receive a system welcome prompt), introduce yourself briefly and invite them to chat. Keep replies concise.',
   });
+  // Set default model to Haiku 4.5 for all new agents
+  updateContainerConfigScalars(ag.id, { model: 'claude-haiku-4-5-20251001' });
 
   // 2b. Assign the user a role for this agent group. The caller picks via
   // --role; the channel drivers default to 'owner' for the self-host case.
