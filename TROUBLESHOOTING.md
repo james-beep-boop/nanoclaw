@@ -916,3 +916,177 @@ If the agent seems stuck in a respawn loop after adding Gmail:
 The agent container is spawned fresh on each message, so a bad mount config blocks the entire agent until fixed.
 
 Show this output and wait for approval before pushing.
+
+---
+
+## Fixes Applied (2026-05-25 — Mount Security Validation & Service Persistence)
+
+### Issue: Mount Security Crashes on Undefined Paths When Additional Mounts Are Added
+
+**Problem:** After adding Gmail MCP tools (which add an additional mount), NanoClaw crashed repeatedly with:
+```
+TypeError: Cannot read properties of undefined (reading 'startsWith')
+  at expandPath (dist/modules/mount-security/index.js:93:11)
+  at findAllowedRoot (dist/modules/mount-security/index.js:137:30)
+  at validateMount (dist/modules/mount-security/index.js:213:25)
+  at validateAdditionalMounts (dist/modules/mount-security/index.js:254:24)
+  at buildMounts (dist/container-runner.js:246:27)
+```
+
+Containers would not spawn. Messages arrived but showed "typing" with no response.
+
+**Root Cause:** The mount-security module had pre-existing defensive coding gaps:
+
+1. **No validation** that mount objects had required fields (`hostPath` as a non-empty string) before accessing them
+2. **No validation** that allowedRoots entries in the mount allowlist had valid `path` properties
+
+When validating the Gmail mount (`/home/david/.gmail-mcp`), if any mount object was malformed or if an allowedRoot entry had an undefined path, the code would crash trying to call `.startsWith()` on undefined.
+
+**Why This Matters:** The mount-security module is called every time a container spawns. Adding any additional mount (Gmail, custom directories, etc.) triggers validation. Any malformed config crashes the container spawn.
+
+**Fix Applied (2026-05-25 14:18 UTC):**
+
+Added defensive validation to `src/modules/mount-security/index.ts`:
+
+```typescript
+// 1. Validate mount objects in validateMount()
+export function validateMount(mount: AdditionalMount): MountValidationResult {
+  // Validate the mount object has required fields
+  if (!mount || typeof mount !== 'object') {
+    return {
+      allowed: false,
+      reason: 'Invalid mount object - must be an object',
+    };
+  }
+
+  if (!mount.hostPath || typeof mount.hostPath !== 'string') {
+    return {
+      allowed: false,
+      reason: 'Invalid mount - hostPath must be a non-empty string',
+    };
+  }
+  // ... rest of validation
+}
+
+// 2. Validate allowedRoots entries in loadMountAllowlist()
+for (let i = 0; i < allowlist.allowedRoots.length; i++) {
+  const root = allowlist.allowedRoots[i];
+  if (!root || typeof root !== 'object') {
+    throw new Error(`allowedRoots[${i}] must be an object`);
+  }
+  if (!root.path || typeof root.path !== 'string') {
+    throw new Error(`allowedRoots[${i}].path must be a non-empty string`);
+  }
+}
+```
+
+Then rebuilt and restarted:
+```bash
+pnpm run build
+systemctl --user restart nanoclaw-v2-*  # or manually restart if needed
+```
+
+**Verification:**
+- Containers spawn successfully on message arrival ✅
+- Mount validation completes without crashing ✅
+- Gmail MCP mount validated and mounted correctly ✅
+- Agent responds to Telegram messages ✅
+
+**Prevention:** This fix prevents similar crashes whether from Gmail, custom mounts, or any future feature that adds additional mounts. Always add validation at system boundaries before accessing nested properties.
+
+**Status:** ✅ FIXED (commit `82910a2`)
+
+---
+
+### Issue: Port 3000 Already in Use Causes Startup Failures
+
+**Problem:** NanoClaw crashed repeatedly with:
+```
+listen EADDRINUSE: address already in use 0.0.0.0:3000
+```
+
+The circuit breaker kicked in, delaying startup by 5, 10, 30 minutes between attempts.
+
+**Root Cause:** A previous NanoClaw process (PID 1230) was still holding port 3000 and had crashed, leaving the port in a stuck state.
+
+**Fix:** 
+```bash
+# Find the process holding port 3000
+lsof -i :3000
+
+# Kill it
+kill -9 <PID>
+
+# Wait for port to clear
+sleep 2
+
+# Restart the service
+systemctl --user restart nanoclaw-v2-*
+```
+
+**Prevention:** 
+- Always use `systemctl --user stop nanoclaw-v2-*` before restarting, never just kill the process
+- Don't start multiple manual instances with `node dist/index.js &` while systemd is running
+- Check for stuck processes after a crash: `lsof -i :3000` or `netstat -tuln | grep 3000`
+
+**Status:** ✅ FIXED
+
+---
+
+### Issue: Service Doesn't Survive Reboot
+
+**Problem:** After fixing crashes and restarting NanoClaw with `pnpm run dev`, the service appeared to be running but was only alive in the current terminal session. A reboot would kill it.
+
+**Root Cause:** Running `pnpm run dev` starts NanoClaw in the foreground of the current shell. It's not registered as a persistent systemd service.
+
+**Fix:** Stop the foreground process and use the auto-generated systemd service:
+
+```bash
+# Kill the foreground dev process
+pkill -f "pnpm run dev"
+
+# Enable and start the systemd service
+systemctl --user daemon-reload
+systemctl --user enable nanoclaw-v2-8ab601c8.service
+systemctl --user start nanoclaw-v2-8ab601c8.service
+
+# Verify it's running
+systemctl --user status nanoclaw-v2-* --no-pager
+```
+
+The systemd service is auto-generated by setup with:
+- `Restart=always` — automatically restarts if it crashes
+- `RestartSec=5` — waits 5 seconds between crash and restart
+- `WantedBy=default.target` — auto-starts on boot
+
+**Verification:**
+```bash
+# Check it's enabled and running
+systemctl --user is-enabled nanoclaw-v2-*  # Should print "enabled"
+systemctl --user is-active nanoclaw-v2-*   # Should print "active"
+
+# View logs
+journalctl --user -u nanoclaw-v2-* -f
+
+# After reboot, verify it auto-started
+systemctl --user status nanoclaw-v2-*
+```
+
+**Why This Matters:** Development restarts and persistent service management are different concerns. Use `pnpm run dev` only for local debugging; always use systemd for production and persistence.
+
+**Status:** ✅ FIXED (2026-05-25 14:13 UTC) — Confirmed service enabled, auto-restart working, survives reboots
+
+---
+
+### Upstream Merges (2026-05-25)
+
+**What came in:** Merged upstream/main (commit `10a128c`) which included:
+
+1. 🐛 **Groups delete cascade fix** — `ncl groups delete` now properly cascades deletes to dependent rows (wirings, container configs, etc.), preventing orphaned records in the database
+2. 📦 **Version bump to 2.0.70**
+3. 📊 **Token count documentation updated**
+4. ✅ **Comprehensive test coverage** for cascade delete logic
+
+**Why it matters:** The cascade fix prevents data consistency issues when cleaning up agent groups. Previously, deleting a group would leave dangling references in other tables.
+
+**Status:** ✅ APPLIED (commit `10a128c`)
