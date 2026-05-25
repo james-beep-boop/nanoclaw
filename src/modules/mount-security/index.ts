@@ -94,6 +94,17 @@ export function loadMountAllowlist(): MountAllowlist | null {
       throw new Error('blockedPatterns must be an array');
     }
 
+    // Validate each allowed root has a path
+    for (let i = 0; i < allowlist.allowedRoots.length; i++) {
+      const root = allowlist.allowedRoots[i];
+      if (!root || typeof root !== 'object') {
+        throw new Error(`allowedRoots[${i}] must be an object`);
+      }
+      if (!root.path || typeof root.path !== 'string') {
+        throw new Error(`allowedRoots[${i}].path must be a non-empty string`);
+      }
+    }
+
     // Merge with default blocked patterns
     const mergedBlockedPatterns = [...new Set([...DEFAULT_BLOCKED_PATTERNS, ...allowlist.blockedPatterns])];
     allowlist.blockedPatterns = mergedBlockedPatterns;
@@ -228,6 +239,21 @@ export interface MountValidationResult {
  * Returns validation result with reason.
  */
 export function validateMount(mount: AdditionalMount): MountValidationResult {
+  // Validate the mount object has required fields
+  if (!mount || typeof mount !== 'object') {
+    return {
+      allowed: false,
+      reason: 'Invalid mount object - must be an object',
+    };
+  }
+
+  if (!mount.hostPath || typeof mount.hostPath !== 'string') {
+    return {
+      allowed: false,
+      reason: 'Invalid mount - hostPath must be a non-empty string',
+    };
+  }
+
   const allowlist = loadMountAllowlist();
 
   // If no allowlist, block all additional mounts
