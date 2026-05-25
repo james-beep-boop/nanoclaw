@@ -1348,3 +1348,91 @@ Gmail MCP tools now available:
 4. Are the mounted files accessible inside the container at the expected paths?
 
 **Status:** ✅ FIXED (2026-05-25 15:08 UTC)
+
+---
+
+## Docker Image Persistence & Startup Optimization (2026-05-25)
+
+### Problem Addressed
+
+After the container rebuild on 2026-05-25, we discovered that Docker images don't persist across reboots on this ARM-based system. This meant:
+- Every reboot = missing image → containers fail to spawn (exit code 125) on first message
+- Required manual `./container/build.sh` after each reboot (~2-3 min)
+- Delayed response to first message
+
+### Solution Implemented: Hybrid Storage + Auto-Recovery
+
+**Architecture:**
+1. Container image exported to persistent tar file: `data/docker-images/nanoclaw-agent-v2-8ab601c8.tar` (756MB)
+2. Startup script checks if image exists; if not, restores from tar
+3. Script runs as systemd `ExecStartPre` — before NanoClaw starts
+
+**How it works:**
+```
+Reboot → systemd starts nanoclaw-v2-8ab601c8.service
+  ↓
+ExecStartPre: /home/david/nanoclaw-v2/data/restore-docker-image.sh
+  ├─ Check: Does image nanoclaw-agent-v2-8ab601c8:latest exist?
+  ├─ If YES: Continue (image ready)
+  └─ If NO: docker load -i data/docker-images/nanoclaw-agent-v2-8ab601c8.tar (~10 sec)
+  ↓
+ExecStart: NanoClaw service starts
+  ↓
+Ready to receive messages in <15 seconds
+```
+
+**Benefits:**
+- ✅ Fast startup (<15 sec, image loads from disk)
+- ✅ Survives `docker system prune -a` (tar file untouched by Docker)
+- ✅ Auto-recovers if image accidentally deleted
+- ✅ No manual intervention needed after reboot
+- ✅ No rebuild overhead on normal boots
+
+**Storage location:** `data/docker-images/nanoclaw-agent-v2-8ab601c8.tar` (756MB on NVMe, ~0.08% of 1TB drive)
+
+### When to Rebuild & Re-Export
+
+You only need to rebuild when you intentionally change the Dockerfile (update deps, add packages, etc.).
+
+**Rebuild and re-export:**
+```bash
+# Rebuild the image with latest code/deps
+./container/build.sh
+
+# Re-export to persistent storage
+docker save nanoclaw-agent-v2-8ab601c8:latest \
+  -o data/docker-images/nanoclaw-agent-v2-8ab601c8.tar
+
+# Restart the service to pick up new image
+systemctl --user restart nanoclaw-v2-*
+```
+
+**What triggers a rebuild:**
+- You update `container/Dockerfile`
+- You update `container/agent-runner/package.json` (agent dependencies)
+- You add new MCP servers or system packages to the container config
+- A new Claude Code version is available and you want to update the Dockerfile
+
+### Troubleshooting Image Recovery
+
+**If the image is missing but the tar file exists:**
+- Startup script automatically restores it on next service start
+- You'll see in logs: `Restoring Docker image from tar: /home/david/nanoclaw-v2/data/docker-images/nanoclaw-agent-v2-8ab601c8.tar`
+
+**If the tar file is missing AND image is missing:**
+- Service startup will fail with: `ERROR: Docker image tar file not found at ...`
+- Fix: `./container/build.sh && docker save ... -o data/docker-images/nanoclaw-agent-v2-8ab601c8.tar`
+
+**To verify setup is working:**
+```bash
+# Check the tar file exists
+ls -lh data/docker-images/nanoclaw-agent-v2-8ab601c8.tar
+
+# Check the startup script is in place
+ls -la data/restore-docker-image.sh
+
+# Check the service has ExecStartPre configured
+systemctl --user show nanoclaw-v2-8ab601c8 -p ExecStartPre
+```
+
+**Status:** ✅ IMPLEMENTED (2026-05-25 15:25 UTC) — Image stored, startup script active, auto-recovery on boot enabled
