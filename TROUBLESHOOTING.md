@@ -649,4 +649,127 @@ git log upstream/main..HEAD --oneline  # commits to push
 git diff upstream/main --stat          # files changed
 ```
 
+---
+
+## Adding Gmail MCP Tools (OneCLI OAuth)
+
+### Overview
+
+Gmail MCP tools allow agents to read, search, send, and manage emails directly from Telegram (or other channels). The implementation uses OneCLI's Agent Vault for secure OAuth token management — agents never see raw credentials.
+
+### Setup Steps
+
+1. **OneCLI Gmail connection** — Visit OneCLI web UI and authorize your Google account
+2. **Gmail stub credentials** — Create placeholder OAuth files that OneCLI intercepts
+3. **Container image update** — Install `@gongrzhe/server-gmail-autoauth-mcp` in the Docker image
+4. **Per-agent wiring** — Register the MCP server and mount in the agent group's database config
+5. **Test** — Message your agent with email-related queries
+
+### Problems Encountered & Solutions
+
+#### Problem 1: Private IP OAuth Rejection (`Access blocked: device_id and device_name are required`)
+
+**Issue:** Google's OAuth was rejecting requests from private Docker IPs (172.17.0.1), causing "device registration required" errors.
+
+**Root cause:** OneCLI's Docker container was bound to Docker's internal bridge IP, which Google treats as a private IP and rejects unless explicitly registered as a device.
+
+**Solution:**
+- Update `.env` to set `NEXT_PUBLIC_APP_URL=http://100.88.123.29:10254` (Tailscale IP)
+- Update `docker-compose.yml` ports to bind to `0.0.0.0` instead of `${ONECLI_BIND_HOST:-127.0.0.1}`
+- Restart OneCLI containers with `docker compose down && docker compose up -d`
+- Verify with `docker port onecli | grep 10254` — should show `0.0.0.0:10254`
+
+```bash
+# Example: accessing OneCLI on a remote Rock5B from your Mac
+ssh -L 10254:172.17.0.1:10254 david@100.88.123.29
+# Then visit http://localhost:10254 in your browser
+```
+
+#### Problem 2: Unverified Google OAuth App (`Access blocked: NanoClaw-v2 has not completed Google verification`)
+
+**Issue:** Created OAuth credentials in Google Cloud Console, but the app was unverified and blocked sign-in.
+
+**Root cause:** By default, unverified Google OAuth apps can only be used by accounts explicitly added as "test users" in the Google Cloud Console.
+
+**Solution:**
+1. Go to Google Cloud Console → OAuth consent screen
+2. Click **"Audience"** tab
+3. Find **"Test users"** section
+4. Click **"+ ADD USERS"** and enter your Gmail address (e.g., clinicVIM@gmail.com)
+5. Save and retry the OAuth flow
+
+#### Problem 3: Agent Container Crash on Mount Validation (`Cannot read properties of undefined (reading 'startsWith')`)
+
+**Issue:** After adding Gmail mount config, agent containers failed to spawn with a cryptic mount validation error.
+
+**Root cause:** The mount entry in `additional_mounts` had an invalid or malformed JSON structure, causing the mount security validator to receive `undefined`.
+
+**Solution:**
+- Ensure mount JSON is properly formatted in the database: `{"hostPath":"/full/path", "containerPath":".relative/path", "readonly":false}`
+- Use the database query wrapper (not hand-crafted jq) when possible:
+  ```bash
+  pnpm exec tsx scripts/q.ts data/v2.db "UPDATE container_configs SET additional_mounts = '[{\"hostPath\":\"/home/david/.gmail-mcp\",\"containerPath\":\".gmail-mcp\",\"readonly\":false}]' WHERE agent_group_id = 'ag-...';"
+  ```
+- Test by messaging the agent — if it doesn't respond, check logs:
+  ```bash
+  tail -50 logs/nanoclaw.error.log | grep -i "mount\|expand"
+  ```
+
+### Mount Allowlist Configuration
+
+Gmail stub files live at `~/.gmail-mcp/`, which must be whitelisted for mounting. Add to `~/.config/nanoclaw/mount-allowlist.json`:
+
+```json
+{
+  "allowedRoots": ["/home/david"],
+  "blockedPatterns": [],
+  "nonMainReadOnly": true
+}
+```
+
+**Important:** The parent directory (`/home/david`) must be in `allowedRoots` for any subdirectory mounts to work. The mount security module checks this on every agent spawn.
+
+### Verification Checklist
+
+After setup, verify all components:
+
+```bash
+# 1. OneCLI has Gmail connected
+onecli apps get --provider gmail
+# Should show: "connection": { "status": "connected" }
+
+# 2. Stub credentials exist
+ls -la ~/.gmail-mcp/gcp-oauth.keys.json ~/.gmail-mcp/credentials.json
+# Both should exist with 600 permissions
+
+# 3. Mount allowlist is configured
+cat ~/.config/nanoclaw/mount-allowlist.json | grep allowedRoots
+# Should include the parent directory of ~/.gmail-mcp
+
+# 4. Agent group has MCP server registered
+ncl groups config get --id <agent-group-id>
+# Should show "gmail" in mcpServers
+
+# 5. Agent can access Gmail
+# Send: "list my gmail labels" or "search my inbox for recent emails"
+# Agent should respond with actual Gmail data (not "I don't have Gmail tools")
+```
+
+### Docker Container Restart Issues
+
+If the agent seems stuck in a respawn loop after adding Gmail:
+
+1. Clear the additional_mounts temporarily:
+   ```bash
+   pnpm exec tsx scripts/q.ts data/v2.db "UPDATE container_configs SET additional_mounts = '[]' WHERE agent_group_id = '...';"
+   ```
+
+2. Message the agent to verify it starts
+
+3. Fix the mount JSON and re-add it carefully
+
+4. Test again
+
+The agent container is spawned fresh on each message, so a bad mount config blocks the entire agent until fixed.
+
 Show this output and wait for approval before pushing.
