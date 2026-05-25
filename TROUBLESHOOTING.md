@@ -55,6 +55,131 @@ All of these create conflicts, multiple running instances, and port binding fail
 
 ---
 
+## Fixes Applied (2026-05-25 — Post-Reboot with Gmail)
+
+### Issue: Mount Allowlist JSON Structure Breaks Container Spawn After Reboot
+
+**Problem:** After reboot and adding Gmail MCP, agent containers failed to spawn with error:
+```
+TypeError: Cannot read properties of undefined (reading 'startsWith')
+  at expandPath (mount-security/index.js:93)
+```
+
+When a Telegram message arrived, the host showed "typing" indicator but the container never spawned, so no response was sent.
+
+**Root Cause:** The `~/.config/nanoclaw/mount-allowlist.json` had an invalid structure:
+
+```json
+// WRONG — Array of strings
+{
+  "allowedRoots": ["/home/david"],
+  "blockedPatterns": []
+}
+```
+
+But the mount security validator expects:
+
+```typescript
+export interface MountAllowlist {
+  allowedRoots: AllowedRoot[];  // Array of OBJECTS, not strings
+  blockedPatterns: string[];
+}
+
+export interface AllowedRoot {
+  path: string;
+  allowReadWrite: boolean;
+  description?: string;
+}
+```
+
+When validation code tried to access `root.path` on a string, it got `undefined`, then crashed when trying to call `.startsWith()` on undefined.
+
+**Fix Applied (2026-05-25 09:05 UTC):**
+
+```json
+{
+  "allowedRoots": [
+    {
+      "path": "/home/david",
+      "allowReadWrite": true
+    }
+  ],
+  "blockedPatterns": []
+}
+```
+
+Then rebuilt and restarted:
+```bash
+pnpm run build
+node dist/index.js  # or systemctl restart if using service
+```
+
+**Verification:**
+- Agent container now spawns successfully on message arrival ✅
+- Mount validation passes without errors ✅
+- Gmail MCP mount (`/home/david/.gmail-mcp` → `/workspace/extra/.gmail-mcp`) is properly validated ✅
+- Agent responds to Telegram messages ✅ (slightly slower, likely Telegram network issue detailed below)
+
+**When This Happens:** After reboot or when adding any additional mounts (like Gmail MCP credentials), if containers won't spawn and logs show mount validation errors, check the mount-allowlist structure immediately.
+
+**Status:** ✅ FIXED (2026-05-25 09:05 UTC)
+
+---
+
+### Issue: Duplicate NanoClaw Instances Break Telegram Polling (2026-05-25)
+
+**Problem:** After fixing mount-allowlist and restarting the service, logs showed:
+```
+'ValidationError: Conflict: terminated by other getUpdates request; 
+make sure that only one bot instance is running'
+```
+
+This appeared to be a network error, but was actually **Telegram API rejecting duplicate polling connections**.
+
+**Root Cause:** During troubleshooting, I accidentally started a SECOND instance of NanoClaw while the systemd service was also running:
+```bash
+# WRONG - started second instance manually
+node dist/index.js &
+
+# Meanwhile, systemd service was ALSO running
+/usr/bin/node /home/david/nanoclaw-v2/dist/index.js
+```
+
+Both instances were polling Telegram with the same `TELEGRAM_BOT_TOKEN`. Telegram API detects this and rejects new polling requests from the duplicate.
+
+**Symptoms of Duplicate Instance Problem:**
+- Logs show "terminated by other getUpdates request"
+- Telegram adapter initializes but polling immediately fails
+- `ps aux | grep node` shows multiple NanoClaw processes
+- Each restart creates another duplicate (if using manual `node dist/index.js &`)
+
+**Prevention:**
+- **NEVER** use `node dist/index.js &` for process management
+- **ALWAYS** use the systemd service: `systemctl --user restart nanoclaw-v2-*`
+- Before manually starting anything, verify what's already running: `ps aux | grep "node.*dist"`
+
+**Fix If This Happens:**
+```bash
+# Find all NanoClaw processes
+ps aux | grep "node.*dist/index.js" | grep -v grep
+
+# Kill the manually-started ones (keep the systemd one)
+# Check the PID with lowest number (systemd service) vs newer ones (manual)
+kill -9 <PID_of_duplicate>
+
+# Verify only ONE remains
+ps aux | grep "node.*dist/index.js" | grep -v grep
+
+# Telegram polling should recover within seconds
+tail -10 logs/nanoclaw.log | grep Telegram
+```
+
+**Why This Matters:** Starting a manual instance while systemd is running creates an invisible conflict — both processes read from the same .env, both connect to the same DB, both try to use the same bot token. The result cascades as errors that look like network/auth problems but are actually resource conflicts.
+
+**Status:** ✅ FIXED (2026-05-25 09:14 UTC) — Verified single instance running, Telegram polling normal
+
+---
+
 ## Fixes Applied (2026-05-24)
 
 ### Issue 1: Environment File Not Loaded by SystemD
