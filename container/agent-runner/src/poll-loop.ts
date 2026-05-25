@@ -43,6 +43,30 @@ export function isCorruptionError(msg: string): boolean {
   );
 }
 
+/**
+ * Number of consecutive `database disk image is malformed` errors after which
+ * the follow-up poll gives up and exits the process. At ACTIVE_POLL_INTERVAL_MS
+ * = 500ms this is roughly 5 seconds — long enough to dodge a transient torn
+ * read during a host write, short enough to recover quickly from a poisoned
+ * page cache (host-sweep then respawns with a fresh mount).
+ */
+const CORRUPTION_STREAK_EXIT = 10;
+
+/**
+ * True for SQLite errors that indicate a corrupt READ view — almost always a
+ * cross-mount page-cache coherency issue on Docker Desktop macOS rather than
+ * actual file damage (host-side integrity_check passes). Reopening the DB
+ * handle inside this process does NOT recover; only a fresh container mount
+ * does. Caller's job is to exit so host-sweep respawns the container.
+ */
+export function isCorruptionError(msg: string): boolean {
+  return (
+    msg.includes('database disk image is malformed') ||
+    msg.includes('SQLITE_CORRUPT') ||
+    msg.includes('file is not a database')
+  );
+}
+
 function log(msg: string): void {
   console.error(`[poll-loop] ${msg}`);
 }
