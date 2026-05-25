@@ -270,6 +270,44 @@ tail -30 logs/nanoclaw.log | grep -i telegram
 
 ---
 
+### Issue 7: Duplicate Constant in poll-loop.ts After Merge (2026-05-24)
+
+**Problem:** After merging upstream/main, the container build cache retained stale layers and didn't include the merged code. When the container was rebuilt, a duplicate `CORRUPTION_STREAK_EXIT` constant was discovered in `container/agent-runner/src/poll-loop.ts` (declared at both lines 29 and 53). This caused all containers to crash immediately with exit code 1.
+
+**Symptom:** Messages show "typing" indicator but never receive responses. All spawned containers exit with code 1:
+```
+[22:21:47.925] [32mINFO[39m [36mContainer exited[39m code=1
+```
+
+**Root Cause:** The merge introduced a duplicate code block (the constant declaration, docstring, and function duplicate from lines 31-59). Bun's strict TypeScript compilation rejects duplicate declarations.
+
+**Fix:** Removed the duplicate block from lines 46-59 in `container/agent-runner/src/poll-loop.ts`, keeping only the first occurrence (lines 29-44).
+
+**Additional Issue Discovered:** Docker buildkit caches build layers aggressively. When the container was rebuilt after the merge, the cache continued using old layers that didn't have the merged source code. Simply running `./container/build.sh` again doesn't invalidate COPY steps—they use cached data from the builder's volume.
+
+**How to Force a Clean Rebuild:**
+```bash
+docker buildx prune -af  # Prune builder cache (may take 1-2 minutes)
+./container/build.sh    # Rebuild from scratch
+systemctl --user restart nanoclaw-v2-*
+```
+
+**Verification:**
+```bash
+docker ps | grep nanoclaw  # Should show container "Up X seconds" (not exited)
+tail -10 logs/nanoclaw.log | grep "Message delivered"  # Should see successful deliveries
+```
+
+**Status:** ✅ FIXED (2026-05-24 22:30 UTC)
+
+**Lesson Learned:** After a merge affecting `container/agent-runner/src/`, always:
+1. Verify no duplicate code was introduced during the merge
+2. If the container build doesn't work after a merge, prune the builder cache
+3. Check `docker ps` to confirm containers stay running (don't exit immediately)
+4. Monitor logs for "Message delivered" entries to confirm end-to-end operation
+
+---
+
 ## Post-Reboot Diagnostic Checklist
 
 **If problems occur after reboot, run these checks in order (total time: ~2 minutes).** Each step is independent and quickly narrows down the issue.
