@@ -825,34 +825,47 @@ ssh -L 10254:172.17.0.1:10254 david@100.88.123.29
 
 #### Problem 3: Agent Container Crash on Mount Validation (`Cannot read properties of undefined (reading 'startsWith')`)
 
-**Issue:** After adding Gmail mount config, agent containers failed to spawn with a cryptic mount validation error.
+**Issue:** After adding Gmail mount config, agent containers failed to spawn with:
+```
+TypeError: Cannot read properties of undefined (reading 'startsWith')
+  at expandPath (mount-security/index.js:93)
+```
 
-**Root cause:** The mount entry in `additional_mounts` had an invalid or malformed JSON structure, causing the mount security validator to receive `undefined`.
+**Root cause:** See **Fixes Applied (2026-05-25) — Mount Security Validation Fix** section below. The mount-security validation code lacked defensive checks for malformed mount objects and allowedRoots entries.
 
-**Solution:**
-- Ensure mount JSON is properly formatted in the database: `{"hostPath":"/full/path", "containerPath":".relative/path", "readonly":false}`
-- Use the database query wrapper (not hand-crafted jq) when possible:
+**Solution:** This was fixed at the code level. If you encounter this error:
+1. Check the logs for the exact error location: `tail -50 logs/nanoclaw.error.log | grep -i "mount\|expand"`
+2. Verify mount JSON is properly formatted: `{"hostPath":"/full/path", "containerPath":".relative/path", "readonly":false}`
+3. Use the database query wrapper to update mounts:
   ```bash
   pnpm exec tsx scripts/q.ts data/v2.db "UPDATE container_configs SET additional_mounts = '[{\"hostPath\":\"/home/david/.gmail-mcp\",\"containerPath\":\".gmail-mcp\",\"readonly\":false}]' WHERE agent_group_id = 'ag-...';"
   ```
-- Test by messaging the agent — if it doesn't respond, check logs:
-  ```bash
-  tail -50 logs/nanoclaw.error.log | grep -i "mount\|expand"
-  ```
+4. Rebuild and restart: `pnpm run build && systemctl --user restart nanoclaw-v2-*`
+
+**Status:** ✅ FIXED in code (commit `82910a2`) — mount-security now validates objects before accessing properties
 
 ### Mount Allowlist Configuration
 
-Gmail stub files live at `~/.gmail-mcp/`, which must be whitelisted for mounting. Add to `~/.config/nanoclaw/mount-allowlist.json`:
+Gmail stub files live at `~/.gmail-mcp/`, which must be whitelisted for mounting. Configure `~/.config/nanoclaw/mount-allowlist.json`:
 
 ```json
 {
-  "allowedRoots": ["/home/david"],
-  "blockedPatterns": [],
-  "nonMainReadOnly": true
+  "allowedRoots": [
+    {
+      "path": "/home/david",
+      "allowReadWrite": true,
+      "description": "Home directory for personal data and credentials"
+    }
+  ],
+  "blockedPatterns": []
 }
 ```
 
-**Important:** The parent directory (`/home/david`) must be in `allowedRoots` for any subdirectory mounts to work. The mount security module checks this on every agent spawn.
+**Important:** 
+- The parent directory (`/home/david`) must be in `allowedRoots` for any subdirectory mounts to work
+- Each entry in `allowedRoots` must be an object with `path` and `allowReadWrite` properties (not just a string)
+- The mount security module checks this structure on every agent spawn
+- Default blocked patterns include `.ssh`, `.aws`, `.gnupg`, `.env`, credentials files, and key files
 
 ### Verification Checklist
 
