@@ -755,6 +755,24 @@ ncl groups config get --id <agent-group-id>
 # Agent should respond with actual Gmail data (not "I don't have Gmail tools")
 ```
 
+#### Problem 4: Agent Confused About Sending Email (`I need to use Gmail's SMTP to actually send`)
+
+**Issue:** When asked to send an email, the agent says it needs SMTP and can't proceed, even though Gmail is connected and reading works fine.
+
+**Root cause:** The Claude model isn't fully aware that the Gmail MCP server has a native `send_email` function that sends directly via the Gmail API — no SMTP bridge needed. The agent overthinks and tries to work around a non-existent limitation.
+
+**Solution:**
+- Be explicit in your request: **"Use mcp__gmail__send_email to send an email to [recipient]..."**
+- Or update the agent's CLAUDE.local.md with a reminder:
+  ```markdown
+  ## Email Tools
+  
+  **Gmail** — Use `mcp__gmail__send_email` directly to send; don't fall back to SMTP.
+  The Gmail MCP server sends via the API, not SMTP.
+  ```
+
+The agent will work correctly once it understands the tool is available. This is a communication issue, not a technical one — the MCP server and credentials are already working.
+
 ### Docker Container Restart Issues
 
 If the agent seems stuck in a respawn loop after adding Gmail:
