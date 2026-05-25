@@ -1230,3 +1230,121 @@ systemctl --user status tailscaled.service
 - System uses always-on VPN (Tailscale, WireGuard, etc.)
 
 **Status:** ✅ FIXED (2026-05-25 14:31 UTC) — Tailscale dependency added, Telegram polling active, 5+ connections established
+
+---
+
+## Fixes Applied (2026-05-25 — Post-Reboot Session 2: Container Rebuild & Gmail MCP)
+
+### Issue 1: Container Image Missing After Reboot
+
+**Problem:** After reboot, all Telegram messages arrived but agent containers failed to spawn with exit code 125 (Docker invalid argument / image not found).
+
+```
+[14:39:24.240] INFO Message routed
+[14:39:25.241] INFO Container exited code=125
+```
+
+Telegram was polling correctly and receiving updates, but containers couldn't spawn, so no responses were sent.
+
+**Root Cause:** The container image `nanoclaw-agent-v2-8ab601c8:latest` wasn't present after reboot. Docker images don't persist across reboots on this system (ARM-based Rock5b with local Docker daemon).
+
+**Symptom Pattern:** Messages arrive and route successfully, but containers exit immediately with code 125 → always indicates missing Docker image.
+
+**Fix Applied:**
+```bash
+./container/build.sh
+systemctl --user restart nanoclaw-v2-*
+```
+
+Container spawned successfully on the next message. Image rebuilt in ~2 minutes on ARM.
+
+**Lesson:** On systems where Docker images don't persist across restarts, either:
+1. Ensure the Dockerfile is idempotent and can rebuild quickly on every boot
+2. Use a startup hook to check for image existence and rebuild if needed
+3. Store images in a persistent location or use image caching
+
+**Status:** ✅ FIXED (2026-05-25 14:45 UTC)
+
+---
+
+### Issue 2: Gmail MCP Server Not Registering with Agent
+
+**Problem:** After container rebuild, Gmail tools returned "No such tool available: mcpgmailsendemail". The agent couldn't see any Gmail MCP tools — `mcp__gmail__send_email`, `mcp__gmail__read_email`, etc. all failed with "tool not found".
+
+Gmail had worked fine before the reboot. After rebuilding the container, the MCP server wouldn't connect to the agent SDK.
+
+**Root Cause:** The additional mount path and MCP environment variables were misaligned.
+
+**The mismatch:**
+```json
+{
+  "additionalMounts": [
+    {
+      "hostPath": "/home/david/.gmail-mcp",
+      "containerPath": ".gmail-mcp"
+      // This becomes /workspace/extra/.gmail-mcp in the container
+    }
+  ],
+  "mcp_servers": {
+    "gmail": {
+      "command": "gmail-mcp",
+      "env": {
+        "GMAIL_OAUTH_PATH": "/workspace/.gmail-mcp/gcp-oauth.keys.json",
+        // ❌ WRONG — points to /workspace/.gmail-mcp
+        // Should be /workspace/extra/.gmail-mcp
+      }
+    }
+  }
+}
+```
+
+When the MCP server started inside the container, it looked for credentials at `/workspace/.gmail-mcp/credentials.json`, but the mount had placed them at `/workspace/extra/.gmail-mcp/credentials.json`. The server failed silently, and the agent SDK received no tool registrations.
+
+**Key insight:** Mount paths with `containerPath: ".gmail-mcp"` are always prefixed with `/workspace/extra/`. This is enforced by the mount-security module. The env vars must account for this prefix.
+
+**Fix Applied:**
+
+Updated `groups/dm-with-david/container.json`:
+```json
+{
+  "mcp_servers": {
+    "gmail": {
+      "command": "gmail-mcp",
+      "env": {
+        "GMAIL_OAUTH_PATH": "/workspace/extra/.gmail-mcp/gcp-oauth.keys.json",
+        "GMAIL_CREDENTIALS_PATH": "/workspace/extra/.gmail-mcp/credentials.json"
+      }
+    }
+  }
+}
+```
+
+Then restarted the agent group:
+```bash
+ncl groups restart --id ag-1778986678202-6a0k9o
+```
+
+Gmail MCP tools now available:
+- `mcp__gmail__send_email` ✅
+- `mcp__gmail__read_email` ✅
+- `mcp__gmail__search_emails` ✅
+- `mcp__gmail__list_email_labels` ✅
+- `mcp__gmail__create_label` ✅
+- `mcp__gmail__delete_email` ✅
+
+**Debugging steps that led to the fix:**
+1. Verified `gmail-mcp` binary exists in the container ✅
+2. Verified credentials files exist on host ✅
+3. Checked that mounts were configured ✅
+4. Noticed the path mismatch between mount destination and env var paths ✅
+5. Updated env vars to use `/workspace/extra/` prefix ✅
+
+**Lesson:** When adding additional mounts with custom `containerPath`, always verify env vars account for the `/workspace/extra/` prefix. The mount validator adds this prefix automatically for security (prevents agents from accessing root filesystem).
+
+**Pattern to recognize:** MCP server fails silently (no tool registration) → check:
+1. Is the binary in the container? (`which <command>`)
+2. Do the credential/config files exist on the host? (`ls -la`)
+3. Are the paths in env vars correct and account for mount prefixes?
+4. Are the mounted files accessible inside the container at the expected paths?
+
+**Status:** ✅ FIXED (2026-05-25 15:08 UTC)
