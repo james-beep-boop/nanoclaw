@@ -794,7 +794,38 @@ WantedBy=multi-user.target
 - Service enabled: persists across reboots ✅
 - Telegram: polling active, no errors ✅
 
-**Status:** ✅ FULLY FIXED (2026-05-26 09:36 UTC) — Power management permanently disabled even after reboot, Telegram stable, systemd service persistent and properly timed
+### Additional Fix (2026-05-26 09:39-09:44 UTC): Adding Boot Delay for NetworkManager
+
+**Problem Discovered (Post-Reboot):** After reboot, power management was **ON again** despite service running with `status=0/SUCCESS`. Even with `After=NetworkManager.service` dependency, NetworkManager was still re-enabling power management after the service exited.
+
+**Root Cause:** The `After=NetworkManager.service` dependency only waits for NetworkManager to start, not for it to fully initialize and configure interfaces. The wifi-power-off service was running and exiting too quickly, before NetworkManager finished applying its own adapter settings.
+
+**Solution:** Add a 5-second delay before disabling power management:
+
+```ini
+[Unit]
+Description=Disable WiFi Power Management
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sleep 5
+ExecStart=/sbin/iwconfig wlP2p33s0 power off
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The sleep allows NetworkManager to fully initialize and finish applying its default settings before we override power management. The multiple `ExecStart` lines run sequentially.
+
+**Verification (2026-05-26 09:44 UTC):**
+- Both processes succeeded: `/bin/sleep 5` (exit 0/SUCCESS) and iwconfig (exit 0/SUCCESS) ✅
+- Power Management: `off` ✅
+- Service status: `Active: active (exited)` ✅
+- Telegram: polling active, no errors ✅
+
+**Status:** ✅ FULLY FIXED (2026-05-26 09:44 UTC) — Power management stays disabled across reboots with 5-second NetworkManager initialization delay
 
 ---
 
