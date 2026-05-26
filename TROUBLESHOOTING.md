@@ -750,7 +750,51 @@ content
 EOF'
 ```
 
-**Status:** ✅ FULLY FIXED (2026-05-26 09:23 UTC) — Power management permanently disabled, Telegram stable, systemd service persistent across reboots
+### Follow-up Issue (2026-05-26 09:26-09:36 UTC): Power Management Re-enabled After Reboot
+
+**Problem Discovered:** After reboot, systemd service ran successfully (`status=0/SUCCESS`) but `iwconfig` still showed `Power Management:on`. NetworkManager was re-enabling power management AFTER the wifi-power-off service completed its one-time run.
+
+**Root Cause:** The initial service had `After=network.target`, which runs too early. NetworkManager comes up later and resets adapter settings, overriding the power-off command.
+
+**Solution:** Modified service to:
+1. Depend on `After=NetworkManager.service` — ensures it runs AFTER NetworkManager is fully initialized
+2. Removed `ExecStartPost` commands (they were malformed anyway due to shell quoting issues)
+3. Kept single `ExecStart=/sbin/iwconfig wlP2p33s0 power off` command
+
+**Service File Creation Challenges:**
+
+Multiple attempts to create the service file failed due to shell heredoc and line-wrapping issues:
+
+1. **Heredoc syntax failures** — Commands like `sudo bash -c 'cat > /file << EOF...'` failed to properly terminate the here-document, leaving literal `EOF` text in files
+2. **Printf with tee** — `printf ... | sudo tee /file` worked but commands got wrapped across multiple lines in the terminal, splitting `power off` into separate lines
+3. **Echo line-by-line** — Long bash command with multiple echo commands also wrapped and failed due to quoting/syntax errors
+4. **Manual nano edit** — Final solution: user edited the file directly with `sudo nano`, avoiding all shell quoting issues
+
+**Lesson:** On this Rock5b/Ubuntu setup, shell syntax for creating multi-line files is unreliable. Best practice: use a text editor (`nano`, `vi`) to create or fix systemd unit files rather than trying to pass them through bash.
+
+**Final Service Configuration (2026-05-26 09:36 UTC):**
+
+```ini
+[Unit]
+Description=Disable WiFi Power Management
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iwconfig wlP2p33s0 power off
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Verification:**
+- Service status: `Active: active (exited)` with `status=0/SUCCESS` ✅
+- Power Management: `off` (confirmed via `iwconfig`) ✅
+- Service enabled: persists across reboots ✅
+- Telegram: polling active, no errors ✅
+
+**Status:** ✅ FULLY FIXED (2026-05-26 09:36 UTC) — Power management permanently disabled even after reboot, Telegram stable, systemd service persistent and properly timed
 
 ---
 
