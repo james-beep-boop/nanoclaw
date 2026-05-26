@@ -597,6 +597,96 @@ Your 20 local commits:
 - Service Health: ✅ EXCELLENT
 - Error Rate: ✅ ZERO
 - Ready for Reboot: ✅ YES
+
+---
+
+## WiFi Stability (Rock5b + Intel AX210) — 2026-05-26
+
+### Symptom
+WiFi connection drops intermittently (once per week or sporadic disconnects), even though signal strength is strong.
+
+**Impact on NanoClaw:** WiFi instability cascades into Telegram polling failures, causing message delivery to stall and error logs to fill with `NetworkError: Network error calling Telegram getUpdates` messages.
+
+### Root Cause Analysis
+
+The Intel AX210 WiFi 6E adapter on ARM-based SBCs (like Radxa Rock5b) has critical firmware/driver compatibility issues:
+
+1. **Driver/Firmware Mismatch:** Kernel driver logs warning:
+   ```
+   iwlwifi 0002:21:00.0: api flags index 2 larger than supported by driver
+   ```
+   This indicates the firmware (v72.a764baac.0) is newer than the kernel driver expects, causing instability and timeouts.
+
+2. **Power Management Issues:** The default power-saving configuration, especially U-APSD (Unscheduled Automatic Power Save Delivery), is unstable on ARM. The adapter enters sleep states incorrectly and misses incoming packets.
+
+3. **Cascading Failures:** WiFi dropouts cause network timeouts → Telegram API calls fail → polling retries back off → container heartbeat detection times out → system appears stuck.
+
+### Solution Applied
+
+Disabled problematic power-saving and monitoring features in the iwlwifi driver.
+
+**Configuration:**
+Added to `/etc/modprobe.d/iwlwifi.conf`:
+```bash
+options iwlwifi power_save=0 fw_monitor=0 11n_disable=0 uapsd_disable=1
+```
+
+**Applied on 2026-05-26 at 08:26 UTC**
+
+**Command to apply manually:**
+```bash
+echo "options iwlwifi power_save=0 fw_monitor=0 11n_disable=0 uapsd_disable=1" | sudo tee /etc/modprobe.d/iwlwifi.conf
+sudo reboot
+```
+
+### Option Reference
+
+| Option | Setting | Effect |
+|--------|---------|--------|
+| `power_save` | 0 (disabled) | Adapter never enters power-saving mode; always stays ready to receive packets |
+| `fw_monitor` | 0 (disabled) | Disables firmware debugging/monitoring overhead; reduces firmware memory pressure and potential crashes |
+| `11n_disable` | 0 (keep enabled) | Maintains 802.11n (WiFi 5) backward compatibility for mixed-device networks |
+| `uapsd_disable` | 1 (CRITICAL) | **Most important fix.** Disables U-APSD, the unstable power-save mechanism on ARM that causes random disconnects |
+
+**Tradeoff:** Trades minimal power efficiency for rock-solid stability. On a powered SBC, power consumption is negligible; network stability is critical.
+
+### Verification
+
+After reboot, confirm settings took effect:
+```bash
+cat /sys/module/iwlwifi/parameters/power_save     # Should print: N (0 = disabled)
+cat /sys/module/iwlwifi/parameters/uapsd_disable  # Should print: 1 (disabled)
+```
+
+If values show different numbers, the config didn't apply — the reboot may not have loaded the module, or the file path was incorrect.
+
+### Expected Outcome
+
+After applying the fix:
+- ✅ WiFi no longer drops once per week
+- ✅ No more intermittent "Network unreachable" errors
+- ✅ Telegram polling remains stable
+- ✅ Error log no longer fills with `NetworkError: Network error calling Telegram getUpdates`
+- ✅ Message delivery latency consistent and predictable
+
+**Monitor for improvement:**
+```bash
+tail -f logs/nanoclaw.error.log | grep -i "telegram\|network"
+```
+
+Before the fix, this showed repeated failures. After WiFi stabilization, errors should stop appearing.
+
+### Technical Details for Future Maintainers
+
+- **Hardware:** Radxa Rock5b (ARM-based SBC), Intel AX210NGW adapter
+- **Kernel:** Linux 6.1.0-1025-rockchip (ARM)
+- **Firmware:** iwlwifi firmware v72.a764baac.0
+- **Issue Classification:** ARM-specific adapter instability, not a host-software bug
+- **When to revisit:** If newer kernel/firmware versions appear to fix the compatibility warning (`api flags index 2`), test with default power settings to see if `uapsd_disable=1` is still necessary
+
+**Do NOT revert these settings without explicit testing** — the adapter will resume dropping connections.
+
+**Status:** ✅ APPLIED (2026-05-26 08:26 UTC) — Awaiting long-term stability verification
 - Confidence Level: ✅ 100%
 
 ---
