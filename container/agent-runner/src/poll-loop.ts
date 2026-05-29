@@ -114,7 +114,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
   let shutdownRequested = false;
   process.on('SIGTERM', () => {
-    log('SIGTERM received — initiating graceful shutdown');
+    const timestamp = new Date().toISOString();
+    const msg = `SIGTERM received at ${timestamp} — initiating graceful shutdown`;
+    log(msg);
     shutdownRequested = true;
   });
 
@@ -237,7 +239,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // can stamp it on outbound rows — needed for a2a return-path routing.
     setCurrentInReplyTo(routing.inReplyTo);
     try {
-      const result = await processQuery(query, routing, processingIds, config.providerName);
+      const result = await processQuery(query, routing, processingIds, config.providerName, () => shutdownRequested);
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
         setContinuation(config.providerName, continuation);
@@ -318,6 +320,7 @@ async function processQuery(
   routing: RoutingContext,
   initialBatchIds: string[],
   providerName: string,
+  isShuttingDown: () => boolean,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -337,6 +340,12 @@ async function processQuery(
   let corruptionStreak = 0;
   const pollHandle = setInterval(() => {
     if (done || pollInFlight || endedForCommand) return;
+    if (isShuttingDown()) {
+      log('Shutdown requested during polling — ending query');
+      done = true;
+      query.end();
+      return;
+    }
     pollInFlight = true;
 
     void (async () => {
@@ -439,6 +448,11 @@ async function processQuery(
 
   try {
     for await (const event of query.events) {
+      if (isShuttingDown()) {
+        log('Shutdown requested — ending active query');
+        query.end();
+        break;
+      }
       handleEvent(event, routing);
       touchHeartbeat();
 
