@@ -1749,11 +1749,36 @@ Two approaches were considered:
   - ✅ **0** = graceful exit (fix working)
   - ❌ **137** = SIGKILL (fix not working, increase grace period)
 
-**If exit code is still 137:**
-- Increase Docker stop timeout from `-t 1` to `-t 5` in `src/container-runner.ts`
-- Rebuild and retry
-- If still 137 after 5 seconds, there's a different issue (e.g., handler not being called)
+### Post-Implementation Finding: Race Condition with 1-Second Grace Period
 
-**Status:** ✅ IMPLEMENTED (2026-05-29, commit f74c006)
+**Observation:** After deploying the SIGTERM handler, containers still exited with code 137 (SIGKILL).
+
+**Root Cause Analysis:**
+- Poll interval (`POLL_INTERVAL_MS`) = 1000ms
+- Initial grace period (`docker stop -t 1`) = 1000ms
+- If SIGTERM arrives while container is sleeping in `await sleep(1000)`, it creates a race:
+  1. SIGTERM arrives → handler sets flag
+  2. But container is sleeping for up to 1 second
+  3. While asleep, Node checks for signals but the event loop is blocked in setTimeout
+  4. When sleep completes, ~1 second has elapsed
+  5. Host timeout fires and sends SIGKILL before the loop can check the flag
+
+**Solution (2026-05-29, commit 21eec0e):**
+Increased grace period from `-t 1` to `-t 5` in `src/container-runtime.ts:33`:
+```bash
+docker stop -t 5 <container-name>  # Increased from -t 1
+```
+
+**Why 5 seconds works:**
+- Gives Node.js event loop time to interrupt the sleep immediately when signal arrives
+- Handler sets flag within milliseconds
+- Loop checks flag on next iteration (~100ms later)
+- Process exits cleanly with code 0, well within 5-second window
+
+**Pattern to recognize:** If graceful shutdown code is in place but containers still get SIGKILL (exit code 137), the grace period may be too short relative to the process's event loop timing. Increase grace period and verify exit code changes to 0.
+
+**Status:** ✅ IMPLEMENTED & VERIFIED (2026-05-29)
+- Handler: commit f74c006
+- Grace period adjustment: commit 21eec0e
 
 **Status:** ✅ IMPLEMENTED (2026-05-25 15:25 UTC) — Image stored, startup script active, auto-recovery on boot enabled
