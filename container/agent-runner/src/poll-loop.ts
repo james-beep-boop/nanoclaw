@@ -112,9 +112,19 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   // This lets the new container re-process those messages.
   clearStaleProcessingAcks();
 
+  let shutdownRequested = false;
+  process.on('SIGTERM', () => {
+    log('SIGTERM received — initiating graceful shutdown');
+    shutdownRequested = true;
+  });
+
   let pollCount = 0;
   let isFirstPoll = true;
   while (true) {
+    if (shutdownRequested) {
+      log('Shutdown requested — exiting poll loop');
+      break;
+    }
     // Skip system messages — they're responses for MCP tools (e.g., ask_user_question)
     const messages = getPendingMessages(isFirstPoll).filter((m) => m.kind !== 'system');
     isFirstPoll = false;
