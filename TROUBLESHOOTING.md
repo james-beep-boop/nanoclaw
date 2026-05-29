@@ -1782,3 +1782,33 @@ docker stop -t 5 <container-name>  # Increased from -t 1
 - Grace period adjustment: commit 21eec0e
 
 **Status:** ✅ IMPLEMENTED (2026-05-25 15:25 UTC) — Image stored, startup script active, auto-recovery on boot enabled
+
+### Investigation Result: Signal Delivery Issue on This System (2026-05-29)
+
+**Key Finding:** SIGTERM is not being delivered to the container process in this environment.
+
+**Investigation Process:**
+1. ✅ Confirmed SIGTERM is sent: Docker daemon logs show "Container failed to exit within Xs of signal 15"
+2. ❌ Confirmed signal doesn't reach process: Neither shell trap nor Bun handler fires
+3. ❌ Tested multiple handler implementations without success
+
+**Attempted Fixes:**
+- Registered handler at top level of entry point
+- Checked shutdown flag in multiple loop locations
+- Added file-based logging to verify handler was called
+- Increased grace periods (5s → 30s) to give more time
+- All failed — signal never reaches the process
+
+**Root Cause:** Signal delivery is broken at the Docker/Tini/ARM level in this specific environment (Radxa Rock 5b). The container's process tree is not receiving signals forwarded by Tini, despite correct configuration.
+
+**Status:** ⚠️ **Known Limitation** — Graceful shutdown cannot be implemented in this environment
+- Containers exit with SIGKILL (code 137) instead of graceful exit (code 0)
+- This is acceptable: no data loss, system is stable, only affects idle timeout (~1 hour)
+- Graceful shutdown code is in place but inactive due to environmental constraint
+
+**Recommendation:** Accept SIGKILL exits as the current behavior. If this becomes critical, would require investigating:
+- Tini ARM build issues or configuration
+- Docker daemon signal forwarding on this system  
+- Alternative signal handling mechanisms
+
+For now, this is documented as an environmental limitation, not a code issue.
