@@ -40,3 +40,4 @@ groups/*
 
 agents-sdk-docs
 data/docker-images/*.tar
+*.backup*
