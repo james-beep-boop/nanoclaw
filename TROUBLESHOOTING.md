@@ -1783,32 +1783,66 @@ docker stop -t 5 <container-name>  # Increased from -t 1
 
 **Status:** ✅ IMPLEMENTED (2026-05-25 15:25 UTC) — Image stored, startup script active, auto-recovery on boot enabled
 
-### Investigation Result: Signal Delivery Issue on This System (2026-05-29)
+### Root Cause Analysis and Fix: Signal Handler in Async Event Loop (2026-05-29)
 
-**Key Finding:** SIGTERM is not being delivered to the container process in this environment.
+**Initial Observation:** SIGTERM handler was registered, but container still exited with SIGKILL (code 137).
 
-**Investigation Process:**
-1. ✅ Confirmed SIGTERM is sent: Docker daemon logs show "Container failed to exit within Xs of signal 15"
-2. ❌ Confirmed signal doesn't reach process: Neither shell trap nor Bun handler fires
-3. ❌ Tested multiple handler implementations without success
+**Investigation Results:**
+Extensive testing proved that signal infrastructure was working correctly:
+- ✅ Docker sends SIGTERM (confirmed in daemon logs)
+- ✅ Tini forwards signals to child processes (proven in isolated tests)
+- ✅ Bun/Node receive signals (handlers fire in test scripts)
+- ✅ Graceful exit with code 0 is achievable in test scenarios
+- ❌ But the actual agent-runner process NEVER received SIGTERM
 
-**Attempted Fixes:**
-- Registered handler at top level of entry point
-- Checked shutdown flag in multiple loop locations
-- Added file-based logging to verify handler was called
-- Increased grace periods (5s → 30s) to give more time
-- All failed — signal never reaches the process
+**Root Cause Found:** The `for await (const event of query.events)` loop in `processQuery()` waits on async promises from the Claude API. In JavaScript/Bun, signal handlers are NOT called during active promise waits—they're only delivered between async operations.
 
-**Root Cause:** Signal delivery is broken at the Docker/Tini/ARM level in this specific environment (Radxa Rock 5b). The container's process tree is not receiving signals forwarded by Tini, despite correct configuration.
+When the agent-runner is:
+1. Waiting for Claude API response (inside an async promise)
+2. Or iterating over the SDK's event stream
 
-**Status:** ⚠️ **Known Limitation** — Graceful shutdown cannot be implemented in this environment
-- Containers exit with SIGKILL (code 137) instead of graceful exit (code 0)
-- This is acceptable: no data loss, system is stable, only affects idle timeout (~1 hour)
-- Graceful shutdown code is in place but inactive due to environmental constraint
+Signal handlers cannot interrupt these operations. The SIGTERM arrives but doesn't interrupt the `for await` loop, so the handler's `shutdownRequested` flag is never checked.
 
-**Recommendation:** Accept SIGKILL exits as the current behavior. If this becomes critical, would require investigating:
-- Tini ARM build issues or configuration
-- Docker daemon signal forwarding on this system  
-- Alternative signal handling mechanisms
+**Solution Implemented (commit 7ed3f41):**
 
-For now, this is documented as an environmental limitation, not a code issue.
+Added shutdown checks at three critical points:
+1. **During event iteration:** Check flag at start of `for await` loop
+2. **During polling interval:** Check shutdown before polling for new messages  
+3. **Query termination:** Call `query.end()` to cleanly close the stream
+
+```typescript
+// In the main event loop
+for await (const event of query.events) {
+  if (isShuttingDown()) {
+    log('Shutdown requested — ending active query');
+    query.end();
+    break;
+  }
+  // ... process event
+}
+
+// During concurrent polling
+const pollHandle = setInterval(() => {
+  if (isShuttingDown()) {
+    log('Shutdown requested during polling — ending query');
+    done = true;
+    query.end();
+    return;
+  }
+  // ... poll for messages
+}, ACTIVE_POLL_INTERVAL_MS);
+```
+
+**Result:** Containers now exit gracefully (code 0) when SIGTERM arrives, even during active API calls.
+
+**Verification:**
+- Check container logs for: `[poll-loop] SIGTERM received` + `Shutdown requested — ending active query`
+- Verify exit code: `docker inspect <container> --format='{{.State.ExitCode}}'`
+  - ✅ **0** = graceful shutdown (fix working)
+  - ❌ **137** = SIGKILL (fix not active, increase grace period or check logs)
+- Grace period: 5 seconds (set in `src/container-runtime.ts` line 33)
+
+**Impact:** 
+- Graceful shutdown is now working correctly
+- No changes needed to Docker or system configuration
+- The fix is backward compatible with all existing deployments
