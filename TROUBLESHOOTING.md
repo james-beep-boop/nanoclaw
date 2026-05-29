@@ -1663,4 +1663,97 @@ ls -la data/restore-docker-image.sh
 systemctl --user show nanoclaw-v2-8ab601c8 -p ExecStartPre
 ```
 
+---
+
+## Container Graceful Shutdown (2026-05-29)
+
+### Problem: Non-Graceful Container Exits (Exit Code 137 / SIGKILL)
+
+**Symptom:**
+- Agent containers received SIGTERM but never exited cleanly
+- Host had to forcefully kill them after 1 second (Docker `docker stop -t 1`)
+- Logs showed: Exit code 137 (process killed by signal 9 = SIGKILL)
+- In-flight messages were sometimes dropped or orphaned
+
+**Root Cause:**
+The agent-runner poll loop ran indefinitely with no signal handler:
+```typescript
+// WRONG — infinite loop, no signal handling
+while (true) {
+  const messages = getPendingMessages();
+  // ... process ...
+}
+```
+
+When SIGTERM arrived (Docker stop), the process had no handler to catch it. After 1 second, Docker sent SIGKILL (signal 9), forcefully terminating the container regardless of in-flight work.
+
+### Solution: SIGTERM Handler with Graceful Shutdown
+
+**Implementation:** Added a SIGTERM handler to `container/agent-runner/src/poll-loop.ts` that sets a flag, allowing the loop to exit cleanly after finishing the current message.
+
+```typescript
+let shutdownRequested = false;
+process.on('SIGTERM', () => {
+  log('SIGTERM received — initiating graceful shutdown');
+  shutdownRequested = true;
+});
+
+let pollCount = 0;
+let isFirstPoll = true;
+while (true) {
+  if (shutdownRequested) {
+    log('Shutdown requested — exiting poll loop');
+    break;
+  }
+  // ... process messages ...
+}
+```
+
+**How it works:**
+1. Container receives SIGTERM (Docker stop with `-t 1`)
+2. Handler sets `shutdownRequested` flag immediately
+3. Loop finishes processing the current message
+4. On next iteration, loop checks flag, sees it's set, breaks cleanly
+5. Process exits with exit code 0
+6. No more SIGKILL needed — graceful exit within 1 second
+
+### Design Decision: Handler Location
+
+Two approaches were considered:
+
+**Approach A (chosen): Handler in poll-loop.ts, local variable**
+- ✅ Simpler — no parameter passing
+- ✅ Handler lives where it's used
+- ✅ Less boilerplate
+- ❌ Less conventional (Unix pattern is top-level)
+- **Chosen because:** Container is single-purpose (one loop), no need for orchestration overhead. For a simple case, simpler is better. Can refactor if complexity grows.
+
+**Approach B: Handler in index.ts, pass as parameter**
+- ✅ Follows Unix convention (signals at entry point)
+- ✅ Future-proof for multiple loops/lifecycle management
+- ❌ More boilerplate for single-loop process
+- ❌ Handler and check live in separate files
+- **Not chosen because:** Premature complexity — add it only if needed.
+
+### Testing & Monitoring
+
+**Before deploying:**
+1. Rebuild container: `./container/build.sh`
+2. Restart service: `systemctl --user restart nanoclaw-v2-*`
+
+**Verify the fix:**
+- Send a message to trigger container spawn
+- Stop the container: `docker stop <container-id>`
+- Check logs for: `[poll-loop] SIGTERM received — initiating graceful shutdown`
+- Verify exit code in Docker: `docker inspect <container-id> | grep ExitCode`
+  - ✅ **0** = graceful exit (fix working)
+  - ❌ **137** = SIGKILL (fix not working, increase grace period)
+
+**If exit code is still 137:**
+- Increase Docker stop timeout from `-t 1` to `-t 5` in `src/container-runner.ts`
+- Rebuild and retry
+- If still 137 after 5 seconds, there's a different issue (e.g., handler not being called)
+
+**Status:** ✅ IMPLEMENTED (2026-05-29, commit f74c006)
+
 **Status:** ✅ IMPLEMENTED (2026-05-25 15:25 UTC) — Image stored, startup script active, auto-recovery on boot enabled
